@@ -1,0 +1,17 @@
+.idea/
+.ipynb_checkpoints/
+.venv/
+__pycache__/
+*.pyc
+
+# Notebook / LaTeX build outputs
+*.aux
+*.log
+*.out
+
+# Local results
+results/
+
+# Large datasets should be cloned separately, not stored in this repo
+iwslt2023_ga-eng/
+iwslt2026_ga-eng/

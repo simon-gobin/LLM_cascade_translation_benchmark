@@ -42,9 +42,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-import librosa
 import numpy as np
-import sacrebleu
 import torch
 from tqdm import tqdm
 from transformers import (
@@ -54,8 +52,16 @@ from transformers import (
     WhisperProcessor,
 )
 
+from pipeline_utils import (
+    compute_bleu,
+    compute_chrf,
+    compute_coverage,
+    compute_repetition_rate,
+    load_audio,
+    transcribe_with_whisper,
+)
 
-TARGET_SR = 16000
+
 DEFAULT_RESULTS_DIR = "results/benchmark_runs"
 DEFAULT_DATASET_ROOT = "iwslt2023_ga-eng"
 
@@ -159,12 +165,6 @@ def choose_device(explicit_device: str | None) -> str:
     return "cpu"
 
 
-def load_audio(filepath: str | Path, target_sr: int = TARGET_SR) -> tuple[np.ndarray, int]:
-    waveform, sr = librosa.load(filepath, sr=target_sr, mono=True)
-    waveform = waveform.astype(np.float32)
-    return waveform, sr
-
-
 def load_dev_samples(dataset_root: Path, start_index: int, max_samples: int) -> list[Sample]:
     dev_root = dataset_root / "dev"
     wav_dir = dev_root / "wav"
@@ -221,22 +221,11 @@ class WhisperASR:
         self.model.generation_config.language = None
 
     def transcribe(self, audio_path: Path) -> str:
-        waveform, sr = load_audio(audio_path)
-        inputs = self.processor(
-            waveform,
-            sampling_rate=sr,
-            return_tensors="pt",
-            return_attention_mask=True,
+        return transcribe_with_whisper(
+            audio_path=audio_path,
+            processor=self.processor,
+            model=self.model,
         )
-        input_features = inputs.input_features.to(self.model.device)
-        attention_mask = inputs.attention_mask.to(self.model.device)
-        with torch.no_grad():
-            predicted_ids = self.model.generate(
-                input_features,
-                attention_mask=attention_mask,
-                task="transcribe",
-            )
-        return self.processor.batch_decode(predicted_ids, skip_special_tokens=True)[0].strip()
 
 
 class QwenASR:
@@ -325,38 +314,6 @@ def build_asr_runner(config: ExperimentConfig, device: str):
     if config.asr_type == "qwen":
         return QwenASR(config.asr_model_id, device)
     raise ValueError(f"Unsupported ASR type: {config.asr_type}")
-
-
-def compute_bleu(hypotheses: list[str], references: list[str]) -> float:
-    # Source: SacreBLEU corpus BLEU
-    # https://github.com/mjpost/sacrebleu
-    return sacrebleu.corpus_bleu(hypotheses, [references]).score
-
-
-def compute_chrf(hypotheses: list[str], references: list[str]) -> float:
-    # Source: SacreBLEU chrF++
-    # https://github.com/mjpost/sacrebleu
-    return sacrebleu.corpus_chrf(hypotheses, [references], word_order=2).score
-
-
-def compute_coverage(hypotheses: list[str]) -> float:
-    n_empty = sum(1 for h in hypotheses if not h.strip())
-    return 1.0 - (n_empty / max(len(hypotheses), 1))
-
-
-def compute_repetition_rate(hypotheses: list[str], threshold: float = 0.3) -> float:
-    flagged = 0
-    for hypothesis in hypotheses:
-        words = hypothesis.split()
-        if len(words) < 4:
-            continue
-        counts: dict[str, int] = {}
-        for word in words:
-            counts[word] = counts.get(word, 0) + 1
-        top_freq = max(counts.values())
-        if top_freq / len(words) > threshold:
-            flagged += 1
-    return flagged / max(len(hypotheses), 1)
 
 
 def write_json(path: Path, payload: Any) -> None:
